@@ -1,95 +1,174 @@
-import random
+#!/usr/bin/env python3
+"""
+Partage de Secret de Shamir - Interface Graphique
+Application moderne pour créer et récupérer des secrets partagés.
 
-PRIME = 257  # Plus grand que 256 pour gérer tous les octets
+Usage:
+    python main.py              # Lance l'interface graphique
+    python main.py --cli        # Lance l'interface en ligne de commande (ancien mode)
+"""
 
-def make_shares(secret_bytes, n, k):
-    """
-    Génère les parts pour chaque byte du secret.
-    Retourne une liste de n parts, chaque part étant une liste d'entiers.
-    """
-    shares = [[] for _ in range(n)]
-    for byte in secret_bytes:
-        # Génère un polynôme aléatoire de degré k-1, le terme constant est le byte
-        coeffs = [byte] + [random.randint(0, PRIME-1) for _ in range(k-1)]
-        for i in range(1, n+1):
-            y = eval_poly(coeffs, i)
-            shares[i-1].append(y)
-    # Chaque share est (index, [y1, y2, ...])
-    return [(i+1, share) for i, share in enumerate(shares)]
+import sys
+import argparse
+from typing import Optional
 
-def eval_poly(coeffs, x):
-    """Évalue un polynôme sur GF(PRIME)"""
-    res = 0
-    for power, coeff in enumerate(coeffs):
-        res = (res + coeff * pow(x, power, PRIME)) % PRIME
-    return res
+def run_gui():
+    """Lance l'interface graphique."""
+    try:
+        from gui import main as gui_main
+        gui_main()
+    except ImportError as e:
+        print(f"Erreur: Tkinter n'est pas disponible.")
+        print(f"💡 Essayez l'interface web à la place: python main.py --web")
+        print(f"Ou installez Tkinter: brew install python-tk (sur macOS)")
+        print(f"Détail de l'erreur: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Erreur lors du lancement de l'interface graphique: {e}")
+        sys.exit(1)
 
-def reconstruct_secret(shares, k):
-    """
-    Reconstitue le secret à partir de k parts.
-    shares: liste de tuples (index, [y1, y2, ...])
-    """
-    # On suppose que toutes les parts ont la même longueur
-    length = len(shares[0][1])
-    secret_bytes = []
-    for idx in range(length):
-        x_s = [s[0] for s in shares]
-        y_s = [s[1][idx] for s in shares]
-        secret_byte = lagrange_interpolate(0, x_s, y_s)
-        # On ramène dans [0,255]
-        secret_bytes.append(secret_byte % 256)
-    return bytes(secret_bytes)
+def run_web():
+    """Lance l'interface web."""
+    try:
+        from web_gui import main as web_main
+        web_main()
+    except ImportError as e:
+        print(f"Erreur: Impossible de charger l'interface web.")
+        print(f"Détail de l'erreur: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Erreur lors du lancement de l'interface web: {e}")
+        sys.exit(1)
 
-def lagrange_interpolate(x, x_s, y_s):
-    """
-    Interpolation de Lagrange sur GF(PRIME)
-    """
-    total = 0
-    k = len(x_s)
-    for i in range(k):
-        xi, yi = x_s[i], y_s[i]
-        prod = yi
-        for j in range(k):
-            if i != j:
-                xj = x_s[j]
-                prod *= (x - xj) * modinv(xi - xj, PRIME)
-                prod %= PRIME
-        total += prod
-        total %= PRIME
-    return total
+def run_cli():
+    """Lance l'interface en ligne de commande (mode legacy)."""
+    try:
+        from shamir_core import ShamirSecretSharing, format_share_for_display, parse_share_from_input
+        
+        shamir = ShamirSecretSharing()
+        
+        print("=== Partage de Secret de Shamir - Mode CLI ===")
+        print()
+        
+        mode = input("Mode: (c)réer un secret ou (r)écupérer un secret? [c/r]: ").lower().strip()
+        
+        if mode.startswith('c'):
+            # Mode création
+            print("\n--- Création d'un nouveau secret ---")
+            secret = input("Entrez votre secret: ").strip()
+            
+            if not secret:
+                print("Erreur: Le secret ne peut pas être vide")
+                return
+            
+            try:
+                n = int(input("Nombre total de parts à générer (ex: 5): "))
+                k = int(input("Nombre minimum de parts pour reconstituer (ex: 3): "))
+            except ValueError:
+                print("Erreur: Veuillez entrer des nombres valides")
+                return
+            
+            try:
+                shares = shamir.create_shares(secret, n, k)
+                
+                print(f"\n--- Secret partagé en {n} parts (minimum {k} pour reconstituer) ---")
+                print("IMPORTANT: Stockez chaque part séparément et en sécurité!")
+                print("=" * 60)
+                
+                for index, share in shares:
+                    formatted_share = format_share_for_display(index, share)
+                    print(f"\nPart {index}:")
+                    print(formatted_share)
+                
+                print("\n" + "=" * 60)
+                print("Partage terminé avec succès!")
+                
+            except Exception as e:
+                print(f"Erreur lors de la création des parts: {e}")
+        
+        elif mode.startswith('r'):
+            # Mode récupération
+            print("\n--- Récupération d'un secret ---")
+            print("Entrez les parts (format: index:valeur1,valeur2,...)")
+            print("Une part par ligne. Ligne vide pour terminer.")
+            print("Exemple: 1:145,67,234,12,89")
+            print()
+            
+            shares = []
+            while True:
+                part_input = input(f"Part #{len(shares) + 1} (ou vide pour terminer): ").strip()
+                if not part_input:
+                    break
+                
+                try:
+                    index, values = parse_share_from_input(part_input)
+                    shares.append((index, values))
+                    print(f"  ✓ Part {index} ajoutée")
+                except Exception as e:
+                    print(f"  ✗ Erreur: {e}")
+            
+            if not shares:
+                print("Aucune part valide fournie")
+                return
+            
+            try:
+                secret = shamir.reconstruct_secret(shares)
+                print(f"\n--- Secret récupéré avec succès ---")
+                print(f"À partir de {len(shares)} parts:")
+                print(f"Secret: {secret}")
+                
+            except Exception as e:
+                print(f"Erreur lors de la récupération: {e}")
+        
+        else:
+            print("Mode invalide. Utilisez 'c' pour créer ou 'r' pour récupérer.")
+    
+    except Exception as e:
+        print(f"Erreur dans le mode CLI: {e}")
+        sys.exit(1)
 
-def modinv(a, p):
-    """Inverse modulaire sur GF(p)"""
-    return pow(a % p, p-2, p)
-
-def seed_to_bytes(seed):
-    return seed.encode('utf-8')
-
-def bytes_to_seed(b):
-    return b.decode('utf-8')
+def main():
+    """Point d'entrée principal."""
+    parser = argparse.ArgumentParser(
+        description="Partage de Secret de Shamir",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Exemples:
+  python main.py                # Lance l'interface graphique (Tkinter)
+  python main.py --web          # Lance l'interface web (recommandé)
+  python main.py --cli          # Lance l'interface en ligne de commande
+        """
+    )
+    
+    parser.add_argument(
+        '--cli',
+        action='store_true',
+        help='Lance l\'interface en ligne de commande'
+    )
+    
+    parser.add_argument(
+        '--web',
+        action='store_true',
+        help='Lance l\'interface web (recommandé si Tkinter n\'est pas disponible)'
+    )
+    
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='Shamir Secret Sharing 1.0.0'
+    )
+    
+    args = parser.parse_args()
+    
+    if args.cli:
+        print("Lancement en mode ligne de commande...")
+        run_cli()
+    elif args.web:
+        print("Lancement de l'interface web...")
+        run_web()
+    else:
+        print("Lancement de l'interface graphique...")
+        run_gui()
 
 if __name__ == "__main__":
-    print("Entrez votre seed Ledger de 24 mots (séparés par des espaces) :")
-    seed = input().strip()
-    n = int(input("Nombre total de parts à générer (ex: 5) : "))
-    k = int(input("Nombre minimum de parts pour reconstituer la seed (ex: 3) : "))
-
-    secret_bytes = seed_to_bytes(seed)
-    shares = make_shares(secret_bytes, n, k)
-
-    print("\nParts générées (à stocker séparément) :")
-    for idx, share in shares:
-        # On affiche chaque part sous forme d'index + liste d'entiers
-        print(f"Part {idx}: {share}")
-
-    print("\nPour reconstituer la seed, entrez au moins k parts (copiez la liste d'entiers pour chaque part) :")
-    input_shares = []
-    for i in range(k):
-        idx = int(input(f"Index de la part #{i+1} : "))
-        share_str = input(f"Liste d'entiers de la part #{i+1} (ex: [12,34,...]) : ")
-        share_list = eval(share_str)
-        input_shares.append((idx, share_list))
-
-    recovered = bytes_to_seed(reconstruct_secret(input_shares, k))
-    print("\nSeed reconstituée :")
-    print(recovered)
+    main()
